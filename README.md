@@ -17,10 +17,6 @@ xcode-select --install
 # Install emerge-aasds
 pip install git+https://github.com/FennisRobert/emerge-aasds.git
 ```
-Below is a fleshed-out, **library-quality API description** that you can drop into your docs or docstrings. It is precise, explicit about lifecycle and reuse, and matches how numerical linear algebra users expect things to behave.
-
-I’ve written it in a neutral, professional style suitable for scientific software.
-
 ---
 ## Shortcomings
 
@@ -186,15 +182,6 @@ solver.destroy()        # optional, automatic otherwise
 * Structural mismatches may raise runtime errors from the backend
 
 ---
-
-If you want, next we can:
-
-* formalize `info` into a typed result object
-* add context-manager support (`with AccelerateInterface(...) as solver`)
-* document matrix format requirements explicitly (CSR/CSC, dtype, ordering)
-* align the API wording with PETSc / UMFPACK conventions
-
-Just tell me where you want to take it.
 
 ## Requirements
 
