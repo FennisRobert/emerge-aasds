@@ -2,7 +2,8 @@
 
 **Apple Accelerate Sparse Direct Solver** - Written for MacOS to be used as solver for EMerge FEM Library.
 
-This interface was written by Claude code. I'll be doing refactors in the upcoming period. I just needed something fast.
+The majority of this interface was written by Claude code. Mostly the C-interface, installer, build stripts and C-files. 
+I will be doing refactors in the upcoming period. 
 
 ## Installation
 
