@@ -151,9 +151,10 @@ This method frees memory allocated by the backend and invalidates the solver ins
 ## Typical Usage Pattern
 
 ```python
+from emerge_aasds import AccelerateInterface, Factorization, Symmetry
 solver = AccelerateInterface(
-    factorization="lu",
-    symmetry="nonsymmetric",
+    factorization=Factorization.LU,
+    symmetry=Symmetry.NONSYMMETRIC,
     verbose=True,
 )
 
