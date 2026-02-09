@@ -5,6 +5,7 @@ Uses compiled C wrapper (libaccelerate_wrapper.dylib)
 
 import numpy as np
 from scipy import sparse
+from typing import Literal
 import ctypes
 import time
 import platform
@@ -154,16 +155,18 @@ accel.accel_refactor_complex_double.argtypes = [
 accel.accel_refactor_complex_double.restype = None
 
 
-class AccelerateInterface:
+class _AccelerateInterface:
     """Apple Accelerate Sparse Direct Solver"""
     
-    def __init__(self, factorization='lu', symmetry='nonsymmetric', verbose=0):
-        self._factorization = factorization
-        self._symmetry = symmetry
+    def __init__(self, factorization: Literal['LU','Cholesky','LDLT','QR']='LU', 
+                 symmetry: Literal['symmetric','nonsymmmetric','hermitian']='nonsymmetric', 
+                 verbose=0):
+        self._factorization: str = factorization
+        self._symmetry: str = symmetry
         self._factored_obj = None
         self._sparse_matrix = None
-        self._is_complex = None
-        self._n = None
+        self._is_complex: bool = None
+        self._n: int = None
         
         factor_map = {
             'cholesky': SPARSE_FACTOR_CHOLESKY,
@@ -177,7 +180,7 @@ class AccelerateInterface:
         
         self.verbose = verbose
     
-    def analyse(self, A):
+    def analyse(self, A: sparse.coo_matrix):
         """Symbolic factorization"""
         if not sparse.issparse(A):
             raise ValueError("A must be scipy sparse matrix")
@@ -199,7 +202,7 @@ class AccelerateInterface:
         if self.verbose > 0:
             print(f"{time.time()-t0:.3f}s")
     
-    def factorize(self, A):
+    def factorize(self, A: sparse.coo_matrix) -> None:
         """Numeric factorization"""
         if self._A_coo is None:
             raise RuntimeError("Call analyse() first")
@@ -272,7 +275,7 @@ class AccelerateInterface:
         if self.verbose > 0:
             print(f"Factorize ({self._factorization}): {time.time()-t0:.3f}s")
     
-    def solve(self, b):
+    def solve(self, b: np.ndarray) -> tuple[np.ndarray, dict[str, float]]:
         """Solve using factorization - FIXED for multiple RHS"""
         if self._factored_obj is None:
             raise RuntimeError("Call factorize() first")
@@ -350,7 +353,10 @@ class AccelerateInterface:
             print(f"Solve ({self._factorization}): {time.time()-t0:.3f}s")
         
         info = {'converged': True, 'residual': 0.0}
-        return (x.squeeze() if squeeze else x), info
+        if squeeze:
+            x = x.squeeze()
+        
+        return x, info
     
     def destroy(self):
         """Cleanup solver resources"""
@@ -371,6 +377,3 @@ class AccelerateInterface:
     def __del__(self):
         self.destroy()
 
-
-def create_accelerate_solver(factorization='lu', symmetry='nonsymmetric', verbose=0):
-    return AccelerateInterface(factorization=factorization, symmetry=symmetry, verbose=verbose)

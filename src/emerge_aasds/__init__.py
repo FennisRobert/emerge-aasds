@@ -14,6 +14,6 @@ Example:
 
 __version__ = "0.1.0"
 
-from ._interface import AccelerateInterface, create_accelerate_solver
+from .interface import AccelerateInterface, Factorization, Symmetry
 
-__all__ = ['AccelerateInterface', 'create_accelerate_solver']
+__all__ = ['AccelerateInterface','Factorization','Symmetry']
