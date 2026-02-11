@@ -1,11 +1,12 @@
 """
 Apple Accelerate Sparse Direct Solver Interface
 Uses compiled C wrapper (libaccelerate_wrapper.dylib)
+EXTENDED VERSION with tunable parameters
 """
 
 import numpy as np
 from scipy import sparse
-from typing import Literal
+from typing import Literal, Optional
 import ctypes
 import time
 import platform
@@ -80,6 +81,28 @@ class SparseOpaqueFactorization_Double(ctypes.Structure):
 class SparseOpaqueFactorization_Complex_Double(ctypes.Structure):
     pass
 
+# ============================================================================
+# EXTENDED: AccelFactorOptions struct
+# ============================================================================
+class AccelFactorOptions(ctypes.Structure):
+    _fields_ = [
+        ("order_method", ctypes.c_int),      # AccelOrderMethod enum
+        ("scaling_method", ctypes.c_int),    # AccelScalingMethod enum  
+        ("pivot_tolerance", ctypes.c_double),
+        ("zero_tolerance", ctypes.c_double)
+    ]
+
+# Ordering method enums
+ACCEL_ORDER_DEFAULT = 0
+ACCEL_ORDER_AMD = 1
+ACCEL_ORDER_METIS = 2
+ACCEL_ORDER_COLAMD = 3
+ACCEL_ORDER_MTMETIS = 4
+
+# Scaling method enums
+ACCEL_SCALING_DEFAULT = 0
+ACCEL_SCALING_NONE = 1
+
 # Factorization types
 SPARSE_FACTOR_CHOLESKY = 0
 SPARSE_FACTOR_LDLT = 1
@@ -91,7 +114,9 @@ SPARSE_KIND_ORDINARY = 0
 SPARSE_KIND_SYMMETRIC = 3
 SPARSE_KIND_HERMITIAN = 4
 
-# Setup function signatures
+# ============================================================================
+# Setup function signatures - EXISTING API
+# ============================================================================
 accel.accel_convert_from_coordinate_double.argtypes = [
     ctypes.c_int, ctypes.c_int, ctypes.c_long, ctypes.c_uint8,
     SparseAttributes_t,
@@ -154,12 +179,51 @@ accel.accel_refactor_complex_double.argtypes = [
 ]
 accel.accel_refactor_complex_double.restype = None
 
+# ============================================================================
+# EXTENDED API - Function signatures with parameters
+# ============================================================================
+accel.accel_get_default_options.argtypes = [ctypes.c_int]
+accel.accel_get_default_options.restype = AccelFactorOptions
+
+accel.accel_factor_double_ex.argtypes = [
+    ctypes.c_uint8,
+    ctypes.POINTER(SparseMatrix_Double),
+    ctypes.POINTER(AccelFactorOptions)
+]
+accel.accel_factor_double_ex.restype = ctypes.POINTER(SparseOpaqueFactorization_Double)
+
+accel.accel_factor_complex_double_ex.argtypes = [
+    ctypes.c_uint8,
+    ctypes.POINTER(SparseMatrix_Complex_Double),
+    ctypes.POINTER(AccelFactorOptions)
+]
+accel.accel_factor_complex_double_ex.restype = ctypes.POINTER(SparseOpaqueFactorization_Complex_Double)
+
+accel.accel_refactor_double_ex.argtypes = [
+    ctypes.POINTER(SparseMatrix_Double),
+    ctypes.POINTER(SparseOpaqueFactorization_Double),
+    ctypes.POINTER(AccelFactorOptions)
+]
+accel.accel_refactor_double_ex.restype = None
+
+accel.accel_refactor_complex_double_ex.argtypes = [
+    ctypes.POINTER(SparseMatrix_Complex_Double),
+    ctypes.POINTER(SparseOpaqueFactorization_Complex_Double),
+    ctypes.POINTER(AccelFactorOptions)
+]
+accel.accel_refactor_complex_double_ex.restype = None
+
 
 class _AccelerateInterface:
-    """Apple Accelerate Sparse Direct Solver"""
+    """Apple Accelerate Sparse Direct Solver with tunable parameters"""
     
-    def __init__(self, factorization: Literal['LU','Cholesky','LDLT','QR']='LU', 
-                 symmetry: Literal['symmetric','nonsymmmetric','hermitian']='nonsymmetric', 
+    def __init__(self, 
+                 factorization: Literal['LU','Cholesky','LDLT','QR']='LU', 
+                 symmetry: Literal['symmetric','nonsymmetric','hermitian']='nonsymmetric',
+                 ordering: str = 'default',
+                 scaling: str = 'default',
+                 pivot_tolerance: Optional[float] = None,
+                 zero_tolerance: Optional[float] = None,
                  verbose=0):
         self._factorization: str = factorization
         self._symmetry: str = symmetry
@@ -178,7 +242,35 @@ class _AccelerateInterface:
         if self._factor_type is None:
             raise ValueError(f"Unknown factorization: {factorization}")
         
+        # Map ordering string to enum
+        ordering_map = {
+            'default': ACCEL_ORDER_DEFAULT,
+            'amd': ACCEL_ORDER_AMD,
+            'metis': ACCEL_ORDER_METIS,
+            'colamd': ACCEL_ORDER_COLAMD,
+            'mtmetis': ACCEL_ORDER_MTMETIS,
+        }
+        self._ordering = ordering_map.get(ordering.lower(), ACCEL_ORDER_DEFAULT)
+        
+        # Map scaling string to enum
+        scaling_map = {
+            'default': ACCEL_SCALING_DEFAULT,
+            'none': ACCEL_SCALING_NONE
+        }
+        self._scaling = scaling_map.get(scaling.lower(), ACCEL_SCALING_DEFAULT)
+        
+        self._pivot_tolerance = pivot_tolerance
+        self._zero_tolerance = zero_tolerance
         self.verbose = verbose
+    
+    def _build_options(self) -> AccelFactorOptions:
+        """Build options struct for C API"""
+        opts = AccelFactorOptions()
+        opts.order_method = self._ordering
+        opts.scaling_method = self._scaling
+        opts.pivot_tolerance = self._pivot_tolerance if self._pivot_tolerance is not None else -1.0
+        opts.zero_tolerance = self._zero_tolerance if self._zero_tolerance is not None else -1.0
+        return opts
     
     def analyse(self, A: sparse.coo_matrix):
         """Symbolic factorization"""
@@ -203,7 +295,7 @@ class _AccelerateInterface:
             print(f"{time.time()-t0:.3f}s")
     
     def factorize(self, A: sparse.coo_matrix) -> None:
-        """Numeric factorization"""
+        """Numeric factorization with custom parameters"""
         if self._A_coo is None:
             raise RuntimeError("Call analyse() first")
         
@@ -223,6 +315,9 @@ class _AccelerateInterface:
         row_arr = A_coo.row.astype(np.int32)
         col_arr = A_coo.col.astype(np.int32)
         
+        # Build options struct
+        opts = self._build_options()
+        
         if self._is_complex:
             data_c = np.empty(nnz, dtype=[('real', np.float64), ('imag', np.float64)])
             data_c['real'] = A_coo.data.real
@@ -238,11 +333,15 @@ class _AccelerateInterface:
             )
             
             if self._factored_obj is None:
-                self._factored_obj = accel.accel_factor_complex_double(
-                    self._factor_type, new_sparse_matrix
+                # First factorization - use extended API
+                self._factored_obj = accel.accel_factor_complex_double_ex(
+                    self._factor_type, new_sparse_matrix, ctypes.byref(opts)
                 )
             else:
-                accel.accel_refactor_complex_double(new_sparse_matrix, self._factored_obj)
+                # Refactorization - use extended API
+                accel.accel_refactor_complex_double_ex(
+                    new_sparse_matrix, self._factored_obj, ctypes.byref(opts)
+                )
             
             if self._sparse_matrix is not None:
                 accel.accel_cleanup_matrix_complex_double(self._sparse_matrix)
@@ -261,11 +360,15 @@ class _AccelerateInterface:
             )
             
             if self._factored_obj is None:
-                self._factored_obj = accel.accel_factor_double(
-                    self._factor_type, new_sparse_matrix
+                # First factorization - use extended API
+                self._factored_obj = accel.accel_factor_double_ex(
+                    self._factor_type, new_sparse_matrix, ctypes.byref(opts)
                 )
             else:
-                accel.accel_refactor_double(new_sparse_matrix, self._factored_obj)
+                # Refactorization - use extended API
+                accel.accel_refactor_double_ex(
+                    new_sparse_matrix, self._factored_obj, ctypes.byref(opts)
+                )
             
             if self._sparse_matrix is not None:
                 accel.accel_cleanup_matrix_double(self._sparse_matrix)
@@ -276,7 +379,7 @@ class _AccelerateInterface:
             print(f"Factorize ({self._factorization}): {time.time()-t0:.3f}s")
     
     def solve(self, b: np.ndarray) -> tuple[np.ndarray, dict[str, float]]:
-        """Solve using factorization - FIXED for multiple RHS"""
+        """Solve using factorization"""
         if self._factored_obj is None:
             raise RuntimeError("Call factorize() first")
         
@@ -292,12 +395,10 @@ class _AccelerateInterface:
         t0 = time.time()
         
         if self._is_complex:
-            # Solve each RHS separately for now (safer)
             x = np.zeros((n, nrhs), dtype=np.complex128)
             
             for i in range(nrhs):
                 b_vec = np.ascontiguousarray(b[:, i])
-                x_vec = np.zeros(n, dtype=np.complex128)
                 
                 b_c = np.empty(n, dtype=[('real', np.float64), ('imag', np.float64)])
                 b_c['real'] = b_vec.real
@@ -324,7 +425,6 @@ class _AccelerateInterface:
                 x[:, i] = x_c['real'] + 1j * x_c['imag']
             
         else:
-            # Real solve - also one at a time
             x = np.zeros((n, nrhs), dtype=np.float64)
             
             for i in range(nrhs):
@@ -376,4 +476,3 @@ class _AccelerateInterface:
     
     def __del__(self):
         self.destroy()
-
