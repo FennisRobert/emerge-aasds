@@ -2,7 +2,8 @@
 
 **Apple Accelerate Sparse Direct Solver** - Written for MacOS to be used as solver for EMerge FEM Library.
 
-This interface was written by Claude code. I'll be doing refactors in the upcoming period. I just needed something fast.
+The majority of this interface was written by Claude code. Mostly the C-interface, installer, build stripts and C-files. 
+I will be doing refactors in the upcoming period. 
 
 ## Installation
 
@@ -16,10 +17,6 @@ xcode-select --install
 # Install emerge-aasds
 pip install git+https://github.com/FennisRobert/emerge-aasds.git
 ```
-Below is a fleshed-out, **library-quality API description** that you can drop into your docs or docstrings. It is precise, explicit about lifecycle and reuse, and matches how numerical linear algebra users expect things to behave.
-
-I’ve written it in a neutral, professional style suitable for scientific software.
-
 ---
 ## Shortcomings
 
@@ -154,9 +151,10 @@ This method frees memory allocated by the backend and invalidates the solver ins
 ## Typical Usage Pattern
 
 ```python
+from emerge_aasds import AccelerateInterface, Factorization, Symmetry
 solver = AccelerateInterface(
-    factorization="lu",
-    symmetry="nonsymmetric",
+    factorization=Factorization.LU,
+    symmetry=Symmetry.NONSYMMETRIC,
     verbose=True,
 )
 
@@ -185,15 +183,6 @@ solver.destroy()        # optional, automatic otherwise
 * Structural mismatches may raise runtime errors from the backend
 
 ---
-
-If you want, next we can:
-
-* formalize `info` into a typed result object
-* add context-manager support (`with AccelerateInterface(...) as solver`)
-* document matrix format requirements explicitly (CSR/CSC, dtype, ordering)
-* align the API wording with PETSc / UMFPACK conventions
-
-Just tell me where you want to take it.
 
 ## Requirements
 
