@@ -14,17 +14,17 @@ import os
 
 # Check if we're on macOS
 if platform.system() != 'Darwin':
-    raise RuntimeError("AccelerateInterface only works on macOS")
+    raise ImportError("AccelerateInterface only works on macOS")
 
 # Load our compiled wrapper
 wrapper_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'libaccelerate_wrapper.dylib')
 if not os.path.exists(wrapper_path):
-    raise RuntimeError(f"Wrapper library not found: {wrapper_path}\nRun build_wrapper.sh first!")
+    raise ImportError(f"Wrapper library not found: {wrapper_path}\nRun build_wrapper.sh first!")
 
 try:
     accel = ctypes.CDLL(wrapper_path)
 except Exception as e:
-    raise RuntimeError(f"Could not load wrapper library: {e}")
+    raise ImportError(f"Could not load wrapper library: {e}")
 
 # Complex number type for C
 class c_complex_double(ctypes.Structure):
