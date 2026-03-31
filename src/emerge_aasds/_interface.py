@@ -395,59 +395,48 @@ class _AccelerateInterface:
         t0 = time.time()
         
         if self._is_complex:
-            x = np.zeros((n, nrhs), dtype=np.complex128)
-            
-            for i in range(nrhs):
-                b_vec = np.ascontiguousarray(b[:, i])
-                
-                b_c = np.empty(n, dtype=[('real', np.float64), ('imag', np.float64)])
-                b_c['real'] = b_vec.real
-                b_c['imag'] = b_vec.imag
-                
-                x_c = np.empty(n, dtype=[('real', np.float64), ('imag', np.float64)])
-                
-                B_mat = DenseMatrix_Complex_Double()
-                B_mat.rowCount = n
-                B_mat.columnCount = 1
-                B_mat.columnStride = n
-                B_mat.attributes = SparseAttributesComplex_t.create()
-                B_mat.data = b_c.ctypes.data_as(ctypes.POINTER(c_complex_double))
-                
-                X_mat = DenseMatrix_Complex_Double()
-                X_mat.rowCount = n
-                X_mat.columnCount = 1
-                X_mat.columnStride = n
-                X_mat.attributes = SparseAttributesComplex_t.create()
-                X_mat.data = x_c.ctypes.data_as(ctypes.POINTER(c_complex_double))
-                
-                accel.accel_solve_complex_double(self._factored_obj, B_mat, X_mat)
-                
-                x[:, i] = x_c['real'] + 1j * x_c['imag']
-            
+            b_f = np.asfortranarray(b, dtype=np.complex128)
+            x_f = np.zeros((n, nrhs), dtype=np.complex128, order='F')
+
+            B_mat = DenseMatrix_Complex_Double()
+            B_mat.rowCount = n
+            B_mat.columnCount = nrhs
+            B_mat.columnStride = n
+            B_mat.attributes = SparseAttributesComplex_t.create()
+            B_mat.data = b_f.ctypes.data_as(ctypes.POINTER(c_complex_double))
+
+            X_mat = DenseMatrix_Complex_Double()
+            X_mat.rowCount = n
+            X_mat.columnCount = nrhs
+            X_mat.columnStride = n
+            X_mat.attributes = SparseAttributesComplex_t.create()
+            X_mat.data = x_f.ctypes.data_as(ctypes.POINTER(c_complex_double))
+
+            accel.accel_solve_complex_double(self._factored_obj, B_mat, X_mat)
+
+            x = np.ascontiguousarray(x_f)
+
         else:
-            x = np.zeros((n, nrhs), dtype=np.float64)
-            
-            for i in range(nrhs):
-                b_vec = np.ascontiguousarray(b[:, i])
-                x_vec = np.zeros(n, dtype=np.float64)
-                
-                B_mat = DenseMatrix_Double()
-                B_mat.rowCount = n
-                B_mat.columnCount = 1
-                B_mat.columnStride = n
-                B_mat.attributes = SparseAttributes_t.create()
-                B_mat.data = b_vec.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
-                
-                X_mat = DenseMatrix_Double()
-                X_mat.rowCount = n
-                X_mat.columnCount = 1
-                X_mat.columnStride = n
-                X_mat.attributes = SparseAttributes_t.create()
-                X_mat.data = x_vec.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
-                
-                accel.accel_solve_double(self._factored_obj, B_mat, X_mat)
-                
-                x[:, i] = x_vec
+            b_f = np.asfortranarray(b, dtype=np.float64)
+            x_f = np.zeros((n, nrhs), dtype=np.float64, order='F')
+
+            B_mat = DenseMatrix_Double()
+            B_mat.rowCount = n
+            B_mat.columnCount = nrhs
+            B_mat.columnStride = n
+            B_mat.attributes = SparseAttributes_t.create()
+            B_mat.data = b_f.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+            X_mat = DenseMatrix_Double()
+            X_mat.rowCount = n
+            X_mat.columnCount = nrhs
+            X_mat.columnStride = n
+            X_mat.attributes = SparseAttributes_t.create()
+            X_mat.data = x_f.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+            accel.accel_solve_double(self._factored_obj, B_mat, X_mat)
+
+            x = np.ascontiguousarray(x_f)
         
         if self.verbose > 0:
             print(f"Solve ({self._factorization}): {time.time()-t0:.3f}s")
