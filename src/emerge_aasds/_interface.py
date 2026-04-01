@@ -280,48 +280,48 @@ class _AccelerateInterface:
         # Clean up any previous factorization
         self.destroy()
         
-        A_coo = A.tocoo()
-        self._n = A_coo.shape[0]
-        self._is_complex = np.iscomplexobj(A_coo.data)
+        A = A.tocoo()
+        self._n = A.shape[0]
+        self._is_complex = np.iscomplexobj(A.data)
         
         if self.verbose > 0:
             t0 = time.time()
             ctype = "complex" if self._is_complex else "real"
             print(f"Analyse ({self._factorization}, {ctype}): ", end='', flush=True)
         
-        self._A_coo = A_coo
+        self._A = A
         
         if self.verbose > 0:
             print(f"{time.time()-t0:.3f}s")
     
     def factorize(self, A: sparse.coo_matrix) -> None:
         """Numeric factorization with custom parameters"""
-        if self._A_coo is None:
+        if self._A is None:
             raise RuntimeError("Call analyse() first")
         
-        A_coo = A.tocoo()
-        
+        A = A.tocoo()
         t0 = time.time()
         
         kind = SPARSE_KIND_ORDINARY
         if self._symmetry == 'symmetric':
             kind = SPARSE_KIND_SYMMETRIC
+
         elif self._symmetry == 'hermitian':
             kind = SPARSE_KIND_HERMITIAN
+
+        n = A.shape[0]
+        nnz = A.nnz
         
-        n = A_coo.shape[0]
-        nnz = A_coo.nnz
-        
-        row_arr = A_coo.row.astype(np.int32)
-        col_arr = A_coo.col.astype(np.int32)
+        row_arr = A.row.astype(np.int32)
+        col_arr = A.col.astype(np.int32)
         
         # Build options struct
         opts = self._build_options()
         
         if self._is_complex:
             data_c = np.empty(nnz, dtype=[('real', np.float64), ('imag', np.float64)])
-            data_c['real'] = A_coo.data.real
-            data_c['imag'] = A_coo.data.imag
+            data_c['real'] = A.data.real
+            data_c['imag'] = A.data.imag
             
             attrs = SparseAttributesComplex_t.create(kind=kind)
             
@@ -349,7 +349,7 @@ class _AccelerateInterface:
             self._sparse_matrix = new_sparse_matrix
             
         else:
-            data_arr = A_coo.data.astype(np.float64)
+            data_arr = A.data.astype(np.float64)
             attrs = SparseAttributes_t.create(kind=kind)
             
             new_sparse_matrix = accel.accel_convert_from_coordinate_double(
@@ -379,7 +379,11 @@ class _AccelerateInterface:
             print(f"Factorize ({self._factorization}): {time.time()-t0:.3f}s")
     
     def solve(self, b: np.ndarray) -> tuple[np.ndarray, dict[str, float]]:
-        """Solve using factorization"""
+        """Solve using factorization - supports multiple RHS
+        
+        WARNING: Apple Accelerate has a bug with symmetric mode + multi-RHS.
+        Only use symmetric/hermitian mode with single RHS, or use nonsymmetric mode.
+        """
         if self._factored_obj is None:
             raise RuntimeError("Call factorize() first")
         
@@ -391,52 +395,62 @@ class _AccelerateInterface:
             squeeze = False
         
         n, nrhs = b.shape
-        
         t0 = time.time()
         
         if self._is_complex:
-            b_f = np.asfortranarray(b, dtype=np.complex128)
-            x_f = np.zeros((n, nrhs), dtype=np.complex128, order='F')
-
+            # Convert to Fortran order for correct memory layout
+            b = np.asfortranarray(b)
+            
+            # Create C-compatible structured arrays in Fortran order
+            b_c = np.empty((n, nrhs), dtype=[('real', np.float64), ('imag', np.float64)], order='F')
+            b_c['real'] = b.real
+            b_c['imag'] = b.imag
+            
+            x_c = np.empty((n, nrhs), dtype=[('real', np.float64), ('imag', np.float64)], order='F')
+            
+            # Setup DenseMatrix for batch solve
             B_mat = DenseMatrix_Complex_Double()
             B_mat.rowCount = n
             B_mat.columnCount = nrhs
             B_mat.columnStride = n
             B_mat.attributes = SparseAttributesComplex_t.create()
-            B_mat.data = b_f.ctypes.data_as(ctypes.POINTER(c_complex_double))
-
+            B_mat.data = b_c.ctypes.data_as(ctypes.POINTER(c_complex_double))
+            
             X_mat = DenseMatrix_Complex_Double()
             X_mat.rowCount = n
             X_mat.columnCount = nrhs
             X_mat.columnStride = n
             X_mat.attributes = SparseAttributesComplex_t.create()
-            X_mat.data = x_f.ctypes.data_as(ctypes.POINTER(c_complex_double))
-
+            X_mat.data = x_c.ctypes.data_as(ctypes.POINTER(c_complex_double))
+            
+            # Solve all RHS at once
             accel.accel_solve_complex_double(self._factored_obj, B_mat, X_mat)
-
-            x = np.ascontiguousarray(x_f)
-
+            
+            # Convert back to complex
+            x = x_c['real'] + 1j * x_c['imag']
+            
         else:
+            # Real case - Fortran order batch solve
             b_f = np.asfortranarray(b, dtype=np.float64)
             x_f = np.zeros((n, nrhs), dtype=np.float64, order='F')
-
+            
             B_mat = DenseMatrix_Double()
             B_mat.rowCount = n
             B_mat.columnCount = nrhs
             B_mat.columnStride = n
             B_mat.attributes = SparseAttributes_t.create()
             B_mat.data = b_f.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
-
+            
             X_mat = DenseMatrix_Double()
             X_mat.rowCount = n
             X_mat.columnCount = nrhs
             X_mat.columnStride = n
             X_mat.attributes = SparseAttributes_t.create()
             X_mat.data = x_f.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
-
+            
             accel.accel_solve_double(self._factored_obj, B_mat, X_mat)
-
-            x = np.ascontiguousarray(x_f)
+            
+            x = x_f
         
         if self.verbose > 0:
             print(f"Solve ({self._factorization}): {time.time()-t0:.3f}s")

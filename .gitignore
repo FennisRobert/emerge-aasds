@@ -9,3 +9,6 @@ wheels/
 # Virtual environments
 .venv
 *.dylib
+.npz
+AASDD/
+.venv/
