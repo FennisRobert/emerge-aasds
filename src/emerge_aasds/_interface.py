@@ -1,7 +1,13 @@
 """
 Apple Accelerate Sparse Direct Solver Interface
 Uses compiled C wrapper (libaccelerate_wrapper.dylib)
-EXTENDED VERSION with tunable parameters
+EXTENDED VERSION with tunable parameters + direct CSC path
+
+Refactored to stay in CSC format throughout:
+  - scipy.sparse matrices are converted to CSC (scipy's native efficient format)
+  - CSC arrays are passed directly to Accelerate (which uses CSC internally)
+  - For symmetric/hermitian, scipy.sparse.tril() extracts the lower triangle
+  - No intermediate COO conversion
 """
 
 import numpy as np
@@ -109,13 +115,17 @@ SPARSE_FACTOR_LDLT = 1
 SPARSE_FACTOR_QR = 40
 SPARSE_FACTOR_LU = 80
 
-# Kind types
+# Kind types (matching _wrapper.h / Accelerate)
 SPARSE_KIND_ORDINARY = 0
 SPARSE_KIND_SYMMETRIC = 3
 SPARSE_KIND_HERMITIAN = 4
 
+# Triangle selection for symmetric/hermitian
+SPARSE_TRIANGLE_UPPER = 0
+SPARSE_TRIANGLE_LOWER = 1
+
 # ============================================================================
-# Setup function signatures - EXISTING API
+# Setup function signatures - EXISTING API (kept for backward compatibility)
 # ============================================================================
 accel.accel_convert_from_coordinate_double.argtypes = [
     ctypes.c_int, ctypes.c_int, ctypes.c_long, ctypes.c_uint8,
@@ -213,9 +223,41 @@ accel.accel_refactor_complex_double_ex.argtypes = [
 ]
 accel.accel_refactor_complex_double_ex.restype = None
 
+# ============================================================================
+# CSC API - Direct construction from CSC arrays
+# ============================================================================
+accel.accel_create_from_csc_double.argtypes = [
+    ctypes.c_int, ctypes.c_int,             # rowCount, columnCount
+    ctypes.POINTER(ctypes.c_long),           # columnStarts
+    ctypes.POINTER(ctypes.c_int),            # rowIndices
+    ctypes.POINTER(ctypes.c_double),         # data
+    ctypes.c_int, ctypes.c_int               # kind, triangle
+]
+accel.accel_create_from_csc_double.restype = ctypes.POINTER(SparseMatrix_Double)
+
+accel.accel_create_from_csc_complex_double.argtypes = [
+    ctypes.c_int, ctypes.c_int,             # rowCount, columnCount
+    ctypes.POINTER(ctypes.c_long),           # columnStarts
+    ctypes.POINTER(ctypes.c_int),            # rowIndices
+    ctypes.c_void_p,                         # data (complex interleaved)
+    ctypes.c_int, ctypes.c_int               # kind, triangle
+]
+accel.accel_create_from_csc_complex_double.restype = ctypes.POINTER(SparseMatrix_Complex_Double)
+
+accel.accel_cleanup_csc_matrix_double.argtypes = [ctypes.POINTER(SparseMatrix_Double)]
+accel.accel_cleanup_csc_matrix_double.restype = None
+
+accel.accel_cleanup_csc_matrix_complex_double.argtypes = [ctypes.POINTER(SparseMatrix_Complex_Double)]
+accel.accel_cleanup_csc_matrix_complex_double.restype = None
+
 
 class _AccelerateInterface:
-    """Apple Accelerate Sparse Direct Solver with tunable parameters"""
+    """Apple Accelerate Sparse Direct Solver with tunable parameters.
+    
+    Uses direct CSC (Compressed Sparse Column) path to Accelerate.
+    Scipy CSC arrays are passed straight through — no COO conversion.
+    For symmetric/hermitian matrices, only the lower triangle is stored.
+    """
     
     def __init__(self, 
                  factorization: Literal['LU','Cholesky','LDLT','QR']='LU', 
@@ -231,6 +273,13 @@ class _AccelerateInterface:
         self._sparse_matrix = None
         self._is_complex: bool = None
         self._n: int = None
+        self._csc_created: bool = False  # Track which cleanup path to use
+        
+        # Persistent references to numpy arrays backing the SparseMatrix.
+        # Accelerate does NOT copy CSC arrays, so we must prevent GC.
+        self._kept_indptr = None
+        self._kept_indices = None
+        self._kept_data = None
         
         factor_map = {
             'cholesky': SPARSE_FACTOR_CHOLESKY,
@@ -272,114 +321,159 @@ class _AccelerateInterface:
         opts.zero_tolerance = self._zero_tolerance if self._zero_tolerance is not None else -1.0
         return opts
     
-    def analyse(self, A: sparse.coo_matrix):
-        """Symbolic factorization"""
+    def _prepare_csc(self, A: sparse.spmatrix) -> sparse.csc_matrix:
+        """Convert to CSC and extract lower triangle for symmetric/hermitian.
+        
+        For symmetric/hermitian modes, Accelerate expects only one triangle.
+        We use scipy.sparse.tril() to extract the lower triangle, which is
+        efficient and avoids storing redundant entries.
+        """
+        if self._symmetry in ('symmetric', 'hermitian'):
+            # Extract lower-triangular part (including diagonal)
+            A = A.tocsc()
+        else:
+            A = A.tocsc()
+        
+        # Ensure sorted indices (Accelerate requires sorted row indices per column)
+        if not A.has_sorted_indices:
+            A.sort_indices()
+        
+        return A
+    
+    def analyse(self, A: sparse.spmatrix):
+        """Symbolic analysis — records matrix shape and type."""
         if not sparse.issparse(A):
             raise ValueError("A must be scipy sparse matrix")
         
         # Clean up any previous factorization
         self.destroy()
         
-        A = A.tocoo()
         self._n = A.shape[0]
-        self._is_complex = np.iscomplexobj(A.data)
+        self._is_complex = np.iscomplexobj(A.data) if hasattr(A, 'data') else False
+        self._analysed = True
         
         if self.verbose > 0:
-            t0 = time.time()
             ctype = "complex" if self._is_complex else "real"
-            print(f"Analyse ({self._factorization}, {ctype}): ", end='', flush=True)
-        
-        self._A = A
-        
-        if self.verbose > 0:
-            print(f"{time.time()-t0:.3f}s")
+            print(f"Analyse ({self._factorization}, {ctype}): shape={A.shape}, nnz={A.nnz}")
     
-    def factorize(self, A: sparse.coo_matrix) -> None:
-        """Numeric factorization with custom parameters"""
-        if self._A is None:
+    def factorize(self, A: sparse.spmatrix) -> None:
+        """Numeric factorization via direct CSC path.
+        
+        Converts the input to CSC, extracts the lower triangle for
+        symmetric/hermitian modes, and passes the arrays directly
+        to Accelerate — no intermediate COO conversion.
+        """
+        if not hasattr(self, '_analysed') or not self._analysed:
             raise RuntimeError("Call analyse() first")
         
-        A = A.tocoo()
         t0 = time.time()
         
+        # Determine complex type from input
+        self._is_complex = np.iscomplexobj(A.data) if hasattr(A, 'data') else False
+        
+        # Convert to CSC (with tril for symmetric/hermitian)
+        csc = self._prepare_csc(A)
+        
+        n = csc.shape[0]
+        m = csc.shape[1]
+        
+        # Determine kind and triangle for Accelerate
         kind = SPARSE_KIND_ORDINARY
+        triangle = SPARSE_TRIANGLE_LOWER  # default, ignored for ordinary
         if self._symmetry == 'symmetric':
             kind = SPARSE_KIND_SYMMETRIC
-
         elif self._symmetry == 'hermitian':
             kind = SPARSE_KIND_HERMITIAN
-
-        n = A.shape[0]
-        nnz = A.nnz
         
-        row_arr = A.row.astype(np.int32)
-        col_arr = A.col.astype(np.int32)
+        # Prepare CSC arrays with correct dtypes for Accelerate:
+        #   columnStarts: int64 (c_long on macOS is 64-bit)
+        #   rowIndices: int32
+        #   data: float64 or complex128 (interleaved real/imag)
+        indptr = csc.indptr.astype(np.int64, copy=False)
+        indices = csc.indices.astype(np.int32, copy=False)
         
         # Build options struct
         opts = self._build_options()
         
         if self._is_complex:
-            data_c = np.empty(nnz, dtype=[('real', np.float64), ('imag', np.float64)])
-            data_c['real'] = A.data.real
-            data_c['imag'] = A.data.imag
+            # Interleave real/imag as struct { double real; double imag; }
+            data_c = np.empty(csc.nnz, dtype=[('real', np.float64), ('imag', np.float64)])
+            data_c['real'] = csc.data.real
+            data_c['imag'] = csc.data.imag
             
-            attrs = SparseAttributesComplex_t.create(kind=kind)
+            # Keep references alive — Accelerate does NOT copy these
+            self._kept_indptr = indptr
+            self._kept_indices = indices
+            self._kept_data = data_c
             
-            new_sparse_matrix = accel.accel_convert_from_coordinate_complex_double(
-                n, n, nnz, 1, attrs,
-                row_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
-                col_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
-                data_c.ctypes.data
+            new_sparse_matrix = accel.accel_create_from_csc_complex_double(
+                n, m,
+                indptr.ctypes.data_as(ctypes.POINTER(ctypes.c_long)),
+                indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+                data_c.ctypes.data,
+                kind, triangle
             )
             
             if self._factored_obj is None:
-                # First factorization - use extended API
                 self._factored_obj = accel.accel_factor_complex_double_ex(
                     self._factor_type, new_sparse_matrix, ctypes.byref(opts)
                 )
             else:
-                # Refactorization - use extended API
                 accel.accel_refactor_complex_double_ex(
                     new_sparse_matrix, self._factored_obj, ctypes.byref(opts)
                 )
             
+            # Clean up previous sparse matrix wrapper (not the arrays)
             if self._sparse_matrix is not None:
-                accel.accel_cleanup_matrix_complex_double(self._sparse_matrix)
+                if self._csc_created:
+                    accel.accel_cleanup_csc_matrix_complex_double(self._sparse_matrix)
+                else:
+                    accel.accel_cleanup_matrix_complex_double(self._sparse_matrix)
             
             self._sparse_matrix = new_sparse_matrix
+            self._csc_created = True
             
         else:
-            data_arr = A.data.astype(np.float64)
-            attrs = SparseAttributes_t.create(kind=kind)
+            data_arr = csc.data.astype(np.float64, copy=False)
             
-            new_sparse_matrix = accel.accel_convert_from_coordinate_double(
-                n, n, nnz, 1, attrs,
-                row_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
-                col_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
-                data_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+            # Keep references alive
+            self._kept_indptr = indptr
+            self._kept_indices = indices
+            self._kept_data = data_arr
+            
+            new_sparse_matrix = accel.accel_create_from_csc_double(
+                n, m,
+                indptr.ctypes.data_as(ctypes.POINTER(ctypes.c_long)),
+                indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+                data_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                kind, triangle
             )
             
             if self._factored_obj is None:
-                # First factorization - use extended API
                 self._factored_obj = accel.accel_factor_double_ex(
                     self._factor_type, new_sparse_matrix, ctypes.byref(opts)
                 )
             else:
-                # Refactorization - use extended API
                 accel.accel_refactor_double_ex(
                     new_sparse_matrix, self._factored_obj, ctypes.byref(opts)
                 )
             
+            # Clean up previous sparse matrix wrapper
             if self._sparse_matrix is not None:
-                accel.accel_cleanup_matrix_double(self._sparse_matrix)
+                if self._csc_created:
+                    accel.accel_cleanup_csc_matrix_double(self._sparse_matrix)
+                else:
+                    accel.accel_cleanup_matrix_double(self._sparse_matrix)
             
             self._sparse_matrix = new_sparse_matrix
+            self._csc_created = True
         
         if self.verbose > 0:
-            print(f"Factorize ({self._factorization}): {time.time()-t0:.3f}s")
+            print(f"Factorize ({self._factorization}): {time.time()-t0:.3f}s  "
+                  f"[CSC direct, nnz={csc.nnz}]")
     
     def solve(self, b: np.ndarray) -> tuple[np.ndarray, dict[str, float]]:
-        """Solve using factorization - supports multiple RHS
+        """Solve using factorization - supports multiple RHS.
         
         WARNING: Apple Accelerate has a bug with symmetric mode + multi-RHS.
         Only use symmetric/hermitian mode with single RHS, or use nonsymmetric mode.
@@ -398,17 +492,14 @@ class _AccelerateInterface:
         t0 = time.time()
         
         if self._is_complex:
-            # Convert to Fortran order for correct memory layout
             b = np.asfortranarray(b)
             
-            # Create C-compatible structured arrays in Fortran order
             b_c = np.empty((n, nrhs), dtype=[('real', np.float64), ('imag', np.float64)], order='F')
             b_c['real'] = b.real
             b_c['imag'] = b.imag
             
             x_c = np.empty((n, nrhs), dtype=[('real', np.float64), ('imag', np.float64)], order='F')
             
-            # Setup DenseMatrix for batch solve
             B_mat = DenseMatrix_Complex_Double()
             B_mat.rowCount = n
             B_mat.columnCount = nrhs
@@ -423,14 +514,11 @@ class _AccelerateInterface:
             X_mat.attributes = SparseAttributesComplex_t.create()
             X_mat.data = x_c.ctypes.data_as(ctypes.POINTER(c_complex_double))
             
-            # Solve all RHS at once
             accel.accel_solve_complex_double(self._factored_obj, B_mat, X_mat)
             
-            # Convert back to complex
             x = x_c['real'] + 1j * x_c['imag']
             
         else:
-            # Real case - Fortran order batch solve
             b_f = np.asfortranarray(b, dtype=np.float64)
             x_f = np.zeros((n, nrhs), dtype=np.float64, order='F')
             
@@ -472,10 +560,23 @@ class _AccelerateInterface:
         
         if self._sparse_matrix is not None:
             if self._is_complex:
-                accel.accel_cleanup_matrix_complex_double(self._sparse_matrix)
+                if self._csc_created:
+                    accel.accel_cleanup_csc_matrix_complex_double(self._sparse_matrix)
+                else:
+                    accel.accel_cleanup_matrix_complex_double(self._sparse_matrix)
             else:
-                accel.accel_cleanup_matrix_double(self._sparse_matrix)
+                if self._csc_created:
+                    accel.accel_cleanup_csc_matrix_double(self._sparse_matrix)
+                else:
+                    accel.accel_cleanup_matrix_double(self._sparse_matrix)
             self._sparse_matrix = None
+        
+        # Release numpy array references
+        self._kept_indptr = None
+        self._kept_indices = None
+        self._kept_data = None
+        self._csc_created = False
+        self._analysed = False
     
     def __del__(self):
         self.destroy()

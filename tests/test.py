@@ -14,7 +14,8 @@ print("="*70)
 
 # Import
 try:
-    from emerge_aasds import AccelerateInterface, Factorization, Symmetry
+    from emerge_aasds import  Factorization, Symmetry
+    from emerge_aasds.interface import AccelerateInterface
     print("✓ Accelerate interface imported successfully\n")
 except ImportError as e:
     print(f"✗ Failed to import: {e}")

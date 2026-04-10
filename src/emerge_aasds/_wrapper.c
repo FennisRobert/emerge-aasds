@@ -1,9 +1,10 @@
 /* accelerate_wrapper.c */
 /* C wrapper to expose Accelerate Sparse functions to Python */
-/* EXTENDED VERSION with tunable parameters */
+/* EXTENDED VERSION with tunable parameters + direct CSC construction */
 
 #include "_wrapper.h"
 #include <stdlib.h>
+#include <string.h>
 
 /* ============================================================================
  * EXISTING API (unchanged for backward compatibility)
@@ -84,7 +85,7 @@ void accel_refactor_complex_double(
     SparseRefactor(*Matrix, Factorization);
 }
 
-/* Wrapper for SparseCleanup - Matrix Double */
+/* Wrapper for SparseCleanup - Matrix Double (COO-created, Accelerate owns internals) */
 void accel_cleanup_matrix_double(SparseMatrix_Double *Matrix)
 {
     if (Matrix) {
@@ -93,7 +94,7 @@ void accel_cleanup_matrix_double(SparseMatrix_Double *Matrix)
     }
 }
 
-/* Wrapper for SparseCleanup - Matrix Complex Double */
+/* Wrapper for SparseCleanup - Matrix Complex Double (COO-created) */
 void accel_cleanup_matrix_complex_double(SparseMatrix_Complex_Double *Matrix)
 {
     if (Matrix) {
@@ -160,7 +161,6 @@ static SparseSymbolicFactorOptions build_symbolic_options(const AccelFactorOptio
     SparseSymbolicFactorOptions sym_opts;
     
     if (opts == NULL) {
-        /* Use defaults */
         sym_opts = _SparseDefaultSymbolicFactorOptions;
     } else {
         sym_opts = _SparseDefaultSymbolicFactorOptions;
@@ -176,27 +176,23 @@ static SparseNumericFactorOptions build_numeric_options(const AccelFactorOptions
     SparseNumericFactorOptions num_opts;
     
     if (opts == NULL) {
-        /* Use defaults */
         num_opts = is_complex ? _SparseDefaultNumericFactorOptions_Complex_Double 
                              : _SparseDefaultNumericFactorOptions_Double;
     } else {
         num_opts = is_complex ? _SparseDefaultNumericFactorOptions_Complex_Double 
                              : _SparseDefaultNumericFactorOptions_Double;
         
-        /* Apply custom scaling */
         if (opts->scaling_method == ACCEL_SCALING_NONE) {
             num_opts.scalingMethod = SparseScalingUser;
-            num_opts.scaling = NULL;  /* No scaling */
+            num_opts.scaling = NULL;
         } else if (opts->scaling_method == ACCEL_SCALING_DEFAULT) {
             num_opts.scalingMethod = SparseScalingDefault;
         }
         
-        /* Apply custom pivot tolerance */
         if (opts->pivot_tolerance >= 0.0) {
             num_opts.pivotTolerance = opts->pivot_tolerance;
         }
         
-        /* Apply custom zero tolerance */
         if (opts->zero_tolerance >= 0.0) {
             num_opts.zeroTolerance = opts->zero_tolerance;
         }
@@ -215,8 +211,6 @@ SparseOpaqueFactorization_Double* accel_factor_double_ex(
     SparseNumericFactorOptions num_opts = build_numeric_options(options, 0);
     
     SparseOpaqueFactorization_Double *fact = malloc(sizeof(SparseOpaqueFactorization_Double));
-    
-    /* Call extended SparseFactor with options */
     *fact = SparseFactor(type, *Matrix, sym_opts, num_opts);
     
     return fact;
@@ -232,8 +226,6 @@ SparseOpaqueFactorization_Complex_Double* accel_factor_complex_double_ex(
     SparseNumericFactorOptions num_opts = build_numeric_options(options, 1);
     
     SparseOpaqueFactorization_Complex_Double *fact = malloc(sizeof(SparseOpaqueFactorization_Complex_Double));
-    
-    /* Call extended SparseFactor with options */
     *fact = SparseFactor(type, *Matrix, sym_opts, num_opts);
     
     return fact;
@@ -246,8 +238,6 @@ void accel_refactor_double_ex(
     const AccelFactorOptions *options)
 {
     SparseNumericFactorOptions num_opts = build_numeric_options(options, 0);
-    
-    /* Refactor with custom numeric options */
     SparseRefactor(*Matrix, Factorization, num_opts);
 }
 
@@ -258,7 +248,127 @@ void accel_refactor_complex_double_ex(
     const AccelFactorOptions *options)
 {
     SparseNumericFactorOptions num_opts = build_numeric_options(options, 1);
-    
-    /* Refactor with custom numeric options */
     SparseRefactor(*Matrix, Factorization, num_opts);
+}
+
+
+/* ============================================================================
+ * CSC API - Direct construction from Compressed Sparse Column arrays
+ *
+ * Accelerate's internal representation IS CSC:
+ *   SparseMatrixStructure { rowCount, columnCount, columnStarts, rowIndices,
+ *                           attributes, blockSize }
+ *   SparseMatrix_Double   { structure, data }
+ *
+ * We construct the struct directly, pointing at the caller's arrays.
+ * The caller (Python) must keep those arrays alive.
+ * ============================================================================ */
+
+/* Direct CSC construction - Double */
+SparseMatrix_Double* accel_create_from_csc_double(
+    int rowCount, int columnCount,
+    const long *columnStarts, const int *rowIndices,
+    const double *data,
+    int kind, int triangle)
+{
+    SparseMatrix_Double *mat = malloc(sizeof(SparseMatrix_Double));
+    
+    SparseAttributes_t attrs = {0};
+    
+    /* Set kind bits: SparseOrdinary=0, SparseSymmetric=2 (bits 0-1) */
+    /* Accelerate uses: 0=ordinary, 2=symmetric, 3=hermitian in the kind field */
+    if (kind == 3) {  /* symmetric */
+        attrs._reserved = 0;
+        attrs.kind = SparseSymmetric;
+    } else if (kind == 4) {  /* hermitian */
+        attrs._reserved = 0;
+        attrs.kind = SparseSymmetric;  /* For real, symmetric == hermitian */
+    }
+    /* kind == 0: ordinary, attrs stays zeroed */
+    
+    /* Set triangle: SparseLowerTriangle if lower */
+    if (kind == 3 || kind == 4) {
+        if (triangle == 1) {
+            attrs.triangle = SparseLowerTriangle;
+        } else {
+            attrs.triangle = SparseUpperTriangle;
+        }
+    }
+    
+    SparseMatrixStructure structure = {
+        .rowCount = rowCount,
+        .columnCount = columnCount,
+        .columnStarts = (long *)columnStarts,
+        .rowIndices = (int *)rowIndices,
+        .attributes = attrs,
+        .blockSize = 1
+    };
+    
+    mat->structure = structure;
+    mat->data = (double *)data;
+    
+    return mat;
+}
+
+/* Direct CSC construction - Complex Double
+ *
+ * SparseMatrix_Complex_Double uses SparseMatrixStructureComplex internally,
+ * which differs from SparseMatrixStructure only in that its attributes field
+ * is typed as SparseAttributesComplex_t instead of SparseAttributes_t.
+ * We populate the struct fields through the mat-> pointer to get the
+ * correct types. */
+SparseMatrix_Complex_Double* accel_create_from_csc_complex_double(
+    int rowCount, int columnCount,
+    const long *columnStarts, const int *rowIndices,
+    const void *data,
+    int kind, int triangle)
+{
+    SparseMatrix_Complex_Double *mat = malloc(sizeof(SparseMatrix_Complex_Double));
+    
+    /* Zero-initialise the whole struct so all reserved/padding bits are clean */
+    memset(mat, 0, sizeof(SparseMatrix_Complex_Double));
+    
+    /* Populate the structure fields directly through the complex type */
+    mat->structure.rowCount = rowCount;
+    mat->structure.columnCount = columnCount;
+    mat->structure.columnStarts = (long *)columnStarts;
+    mat->structure.rowIndices = (int *)rowIndices;
+    mat->structure.blockSize = 1;
+    
+    /* Set attributes on the complex-typed attributes field */
+    if (kind == 3) {  /* symmetric */
+        mat->structure.attributes.kind = SparseSymmetric;
+    } else if (kind == 4) {  /* hermitian */
+        mat->structure.attributes.kind = SparseSymmetric;
+    }
+    /* kind == 0: ordinary, attributes stay zeroed */
+    
+    if (kind == 3 || kind == 4) {
+        if (triangle == 1) {
+            mat->structure.attributes.triangle = SparseLowerTriangle;
+        } else {
+            mat->structure.attributes.triangle = SparseUpperTriangle;
+        }
+    }
+    
+    mat->data = (_Complex double *)data;
+    
+    return mat;
+}
+
+/* Cleanup for CSC-created matrices.
+ * Only free the wrapper struct — the arrays are owned by Python. */
+void accel_cleanup_csc_matrix_double(SparseMatrix_Double *Matrix)
+{
+    if (Matrix) {
+        /* Do NOT call SparseCleanup — we don't own the arrays */
+        free(Matrix);
+    }
+}
+
+void accel_cleanup_csc_matrix_complex_double(SparseMatrix_Complex_Double *Matrix)
+{
+    if (Matrix) {
+        free(Matrix);
+    }
 }
