@@ -8,9 +8,11 @@ class Factorization(Enum):
     QR = "qr"
     CHOLESKY = "cholesky"
     LDLT = "ldlt"
+    LDLT_UP = 'ldltup'
     LDLT_SBK = 'ldltsbk'
     LDLT_TPP = 'ldlttpp'
-    LU_SBK = 'lusbk'
+    LU_UP = 'luup'
+    LU_SPP = 'luspp'
     LU_TPP = 'lutpp'
 
     @property

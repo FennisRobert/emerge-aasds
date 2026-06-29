@@ -290,11 +290,13 @@ class _AccelerateInterface:
         
         factor_map = {
             'cholesky': SPARSE_FACTOR_CHOLESKY,
-            'ldlt': SPARSE_FACTOR_LDLT,
             'qr': SPARSE_FACTOR_QR,
             'lu': SPARSE_FACTOR_LU,
-            'lusbk': SPARSE_FACTOR_LDLT_SBK,
-            'lutpp': SPARSE_FACTOR_LDLT_TPP,
+            'luup': SPARSE_FACTOR_LU_UNPIVOTED,
+            'luspp': SPARSE_FACTOR_LU_SPP,
+            'lutpp': SPARSE_FACTOR_LU_TPP,
+            'ldlt': SPARSE_FACTOR_LDLT,
+            'ldltup': SPARSE_FACTOR_LDLT_UNPIVOTED,
             'ldlttpp': SPARSE_FACTOR_LDLT_TPP,
             'ldltsbk': SPARSE_FACTOR_LDLT_SBK,
         }

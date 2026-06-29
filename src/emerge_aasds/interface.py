@@ -77,7 +77,8 @@ class AccelerateInterface(_AccelerateInterface):
         if sym is Symmetry.SYMMETRIC and fac is Factorization.LU:
             fac = Factorization.LDLT_SBK
         elif sym is Symmetry.NONSYMMETRIC and fac is Factorization.LU:
-            fac = Factorization.LU
+            fac = Factorization.LU_TPP
+        
         verbosity = 1 if verbose else 0
 
         # Call parent with all parameters
