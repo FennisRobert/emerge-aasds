@@ -74,6 +74,10 @@ class AccelerateInterface(_AccelerateInterface):
                 'LDLT and Cholesky factorization are currently not supported.'
             )
 
+        if sym is Symmetry.SYMMETRIC and fac is Factorization.LU:
+            fac = Factorization.LDLT_SBK
+        elif sym is Symmetry.NONSYMMETRIC and fac is Factorization.LU:
+            fac = Factorization.LU
         verbosity = 1 if verbose else 0
 
         # Call parent with all parameters

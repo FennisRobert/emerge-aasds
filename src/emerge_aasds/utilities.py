@@ -5,9 +5,13 @@ from typing import Union
 class Factorization(Enum):
     """Supported matrix factorizations."""
     LU = "lu"
+    QR = "qr"
     CHOLESKY = "cholesky"
     LDLT = "ldlt"
-    QR = "qr"
+    LDLT_SBK = 'ldltsbk'
+    LDLT_TPP = 'ldlttpp'
+    LU_SBK = 'lusbk'
+    LU_TPP = 'lutpp'
 
     @property
     def _backend_string(self) -> str:

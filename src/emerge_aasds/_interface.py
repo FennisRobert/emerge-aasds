@@ -110,10 +110,17 @@ ACCEL_SCALING_DEFAULT = 0
 ACCEL_SCALING_NONE = 1
 
 # Factorization types
-SPARSE_FACTOR_CHOLESKY = 0
-SPARSE_FACTOR_LDLT = 1
-SPARSE_FACTOR_QR = 40
-SPARSE_FACTOR_LU = 80
+SPARSE_FACTOR_CHOLESKY = 0          # SparseFactorizationCholesky
+SPARSE_FACTOR_LDLT = 1              # SparseFactorizationLDLT (default LDLT, currently TPP)
+SPARSE_FACTOR_LDLT_UNPIVOTED = 2    # SparseFactorizationLDLTUnpivoted
+SPARSE_FACTOR_LDLT_SBK = 3          # SparseFactorizationLDLTSBK
+SPARSE_FACTOR_LDLT_TPP = 4          # SparseFactorizationLDLTTPP
+SPARSE_FACTOR_QR = 40               # SparseFactorizationQR
+SPARSE_FACTOR_CHOLESKY_AT_A = 41    # SparseFactorizationCholeskyAtA
+SPARSE_FACTOR_LU = 80               # SparseFactorizationLU (default LU, currently TPP)
+SPARSE_FACTOR_LU_UNPIVOTED = 81     # SparseFactorizationLUUnpivoted
+SPARSE_FACTOR_LU_SPP = 82           # SparseFactorizationLUSPP
+SPARSE_FACTOR_LU_TPP = 83           # SparseFactorizationLUTPP
 
 # Kind types (matching _wrapper.h / Accelerate)
 SPARSE_KIND_ORDINARY = 0
@@ -260,7 +267,7 @@ class _AccelerateInterface:
     """
     
     def __init__(self, 
-                 factorization: Literal['LU','Cholesky','LDLT','QR']='LU', 
+                 factorization: Literal['LU','Cholesky','LDLT','QR','LUSBK']='LU', 
                  symmetry: Literal['symmetric','nonsymmetric','hermitian']='nonsymmetric',
                  ordering: str = 'default',
                  scaling: str = 'default',
@@ -286,6 +293,10 @@ class _AccelerateInterface:
             'ldlt': SPARSE_FACTOR_LDLT,
             'qr': SPARSE_FACTOR_QR,
             'lu': SPARSE_FACTOR_LU,
+            'lusbk': SPARSE_FACTOR_LDLT_SBK,
+            'lutpp': SPARSE_FACTOR_LDLT_TPP,
+            'ldlttpp': SPARSE_FACTOR_LDLT_TPP,
+            'ldltsbk': SPARSE_FACTOR_LDLT_SBK,
         }
         self._factor_type = factor_map.get(factorization.lower())
         if self._factor_type is None:
