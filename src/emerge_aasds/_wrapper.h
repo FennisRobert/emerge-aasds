@@ -85,6 +85,16 @@ typedef struct {
 /* Get default options (safe defaults) */
 AccelFactorOptions accel_get_default_options(int is_complex);
 
+/* Returns 1 if MTMetis ordering is available at runtime (macOS 26+), else 0 */
+int accel_mtmetis_available(void);
+
+/* Returns 1 if complex symmetric (non-Hermitian) LDL^T is available (macOS 26+), else 0 */
+int accel_complex_symmetric_available(void);
+
+/* Factorization status (SparseStatus_t: 0 = OK, negative = failure) */
+int accel_factorization_status_double(const SparseOpaqueFactorization_Double *Factored);
+int accel_factorization_status_complex_double(const SparseOpaqueFactorization_Complex_Double *Factored);
+
 /* Factorization WITH options - returns pointers */
 SparseOpaqueFactorization_Double* accel_factor_double_ex(
     SparseFactorization_t type,

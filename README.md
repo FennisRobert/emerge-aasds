@@ -7,20 +7,35 @@ I will be doing refactors in the upcoming period.
 
 ## Installation
 
-**macOS only** (requires Xcode Command Line Tools):
-There is currently no PyPI interface yet because I want to make sure there are no license restrictions I should be abiding by.
+**macOS 15.5+ only** (Apple Silicon and Intel, universal2 wheel):
 
 ```bash
-# Install Xcode Command Line Tools (if not already installed)
-xcode-select --install
+pip install emerge-aasds
+```
 
-# Install emerge-aasds
+The wheel ships a prebuilt wrapper library, so no compiler is needed. The wrapper only links
+against the system Accelerate framework; no Apple code is redistributed.
+
+To build from source instead (requires Xcode Command Line Tools):
+
+```bash
+xcode-select --install
 pip install git+https://github.com/FennisRobert/emerge-aasds.git
 ```
 ---
-## Shortcomings
+## Supported factorizations
 
-The current C wrapper does not correctly support Cholesky and LDLT factorization.
+All Accelerate factorizations work for real and complex matrices:
+
+| Factorization | Matrix | Notes |
+|---|---|---|
+| `lu`, `luspp`, `lutpp`, `luup` | any square | `lu` on a symmetric matrix is upgraded to `ldltsbk`, on a nonsymmetric one to `lutpp` |
+| `qr` | any | most robust, slowest |
+| `cholesky` | symmetric / Hermitian positive definite | raises `RuntimeError` if not positive definite |
+| `ldlt`, `ldltsbk`, `ldlttpp`, `ldltup` | symmetric / Hermitian | indefinite matrices are fine (except `ldltup`) |
+
+Complex **symmetric** (A = Aᵀ, not Hermitian, the typical FEM case) LDLᵀ requires macOS 26.
+On macOS 15.5 to 15.x it automatically falls back to LU with a `RuntimeWarning`.
 
 ---
 
@@ -41,10 +56,10 @@ This class separates **symbolic analysis**, **numeric factorization**, and **sol
 
   Supported values:
 
-  * `'lu'` *(default, recommended for general matrices)*
+  * `'lu'` *(default, recommended for general matrices)*, `'luspp'`, `'lutpp'`, `'luup'`
   * `'qr'`
-  * `'cholesky'` *(requires symmetric positive definite matrices)*
-  * `'ldlt'` *(requires symmetric or Hermitian matrices)*
+  * `'cholesky'` *(requires symmetric/Hermitian positive definite matrices)*
+  * `'ldlt'`, `'ldltsbk'`, `'ldlttpp'`, `'ldltup'` *(require symmetric or Hermitian matrices)*
 
 * **`symmetry`** : `Symmetry | str`, optional
   Structural symmetry of the matrix.
@@ -56,6 +71,8 @@ This class separates **symbolic analysis**, **numeric factorization**, and **sol
   * `'hermitian'`
 
   This is used to select optimized backend paths and **must match the actual matrix structure**.
+  For symmetric factorizations only the lower triangle is read. For complex matrices,
+  `'symmetric'` means A = Aᵀ and `'hermitian'` means A = Aᴴ.
 
 * **`verbose`** : `bool`, optional
   Enable backend timing and diagnostic output.
@@ -186,11 +203,21 @@ solver.destroy()        # optional, automatic otherwise
 
 ## Requirements
 
-- macOS 10.13+ (High Sierra or later)
+- macOS 15.5+ (MTMetis ordering requires macOS 26; it falls back to Metis on older systems)
 - Python 3.10+
 - NumPy 1.20+
 - SciPy 1.7+
-- Xcode Command Line Tools
+- Xcode Command Line Tools (only when building from source)
+
+## Releasing
+
+```bash
+rm -rf build dist src/*.egg-info
+uv build                     # dist/emerge_aasds-X.Y.Z.tar.gz + -py3-none-macosx_15_0_universal2.whl
+uvx twine check dist/*
+uvx twine upload --repository testpypi dist/*   # optional dry run
+uvx twine upload dist/*
+```
 
 ## License
 

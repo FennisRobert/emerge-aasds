@@ -1,68 +1,61 @@
 """
-Custom build script to compile accelerate_wrapper.dylib
+Custom build script to compile libaccelerate_wrapper.dylib
+
+The wrapper is loaded with ctypes, so it does not depend on the Python ABI.
+The wheel is therefore tagged py3-none-macosx_<ver>_universal2: one wheel for
+every Python version, installable only on macOS.
 """
-import os
-import subprocess
+import importlib.util
+import platform
 import sys
 from pathlib import Path
+
 from setuptools import setup
 from setuptools.command.build_py import build_py
-import platform
+from setuptools.command.bdist_wheel import bdist_wheel
+
+# Load the build helper by path; importing the package would try to load the dylib.
+_spec = importlib.util.spec_from_file_location(
+    "_build_wrapper", Path(__file__).parent / "src" / "emerge_aasds" / "_build_wrapper.py"
+)
+_build_wrapper = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_build_wrapper)
+
+# pip only matches the major version for macOS 11+, so 15.5 is tagged macosx_15_0.
+# The exact minimum (15.5) is enforced at import time in _interface.py.
+_major = _build_wrapper.MACOSX_DEPLOYMENT_TARGET.split(".")[0]
+PLATFORM_TAG = f"macosx_{_major}_0_universal2"
+
 
 class BuildWrapper(build_py):
-    """Custom build command to compile the C wrapper"""
-    
+    """Compile the C wrapper alongside the Python sources."""
+
     def run(self):
-        # Only build on macOS
+        build_py.run(self)
+
         if platform.system() != 'Darwin':
             print("WARNING: emerge-aasds only works on macOS")
             print("Skipping wrapper compilation on non-macOS system")
-            build_py.run(self)
             return
-        
-        # Get paths
-        src_dir = Path('src/emerge_aasds')
-        wrapper_c = src_dir / '_wrapper.c'
-        wrapper_h = src_dir / '_wrapper.h'
-        output_dylib = src_dir / 'libaccelerate_wrapper.dylib'
-        
-        print("="*70)
-        print("Building Apple Accelerate wrapper library...")
-        print("="*70)
-        
-        if not wrapper_c.exists():
-            raise FileNotFoundError(f"Source file not found: {wrapper_c}")
-        
-        # Compile command
-        cmd = [
-            'clang',
-            '-dynamiclib',
-            '-O3',
-            '-framework', 'Accelerate',
-            '-o', str(output_dylib),
-            str(wrapper_c),
-        ]
-        
-        print(f"Compiling: {' '.join(cmd)}")
-        
-        try:
-            subprocess.check_call(cmd)
-            print(f"✓ Built: {output_dylib}")
-        except subprocess.CalledProcessError as e:
-            print(f"✗ Failed to compile wrapper: {e}")
-            print("\nPlease ensure Xcode Command Line Tools are installed:")
-            print("  xcode-select --install")
+
+        # Editable installs import from src/, regular builds from build_lib.
+        if self.editable_mode:
+            output_dir = Path('src/emerge_aasds')
+        else:
+            output_dir = Path(self.build_lib) / 'emerge_aasds'
+
+        print("=" * 70)
+        if not _build_wrapper.build_wrapper(output_dir):
             sys.exit(1)
-        except FileNotFoundError:
-            print("✗ clang not found")
-            print("\nPlease install Xcode Command Line Tools:")
-            print("  xcode-select --install")
-            sys.exit(1)
-        
-        print("="*70)
-        
-        # Continue with normal build
-        build_py.run(self)
+        print("=" * 70)
+
+
+class PlatformWheel(bdist_wheel):
+    """Tag the wheel as macOS-only but Python-version independent."""
+
+    def get_tag(self):
+        return "py3", "none", PLATFORM_TAG
+
 
 if __name__ == '__main__':
-    setup(cmdclass={'build_py': BuildWrapper})
+    setup(cmdclass={'build_py': BuildWrapper, 'bdist_wheel': PlatformWheel})

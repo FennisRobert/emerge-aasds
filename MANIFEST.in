@@ -1,0 +1,5 @@
+include LICENSE README.md pyproject.toml setup.py
+include src/emerge_aasds/*.c src/emerge_aasds/*.h
+recursive-include tests *.py
+
+global-exclude *.dylib *.so *.npz *.py[cod] __pycache__ .DS_Store

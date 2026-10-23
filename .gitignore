@@ -11,4 +11,4 @@ wheels/
 *.dylib
 .npz
 AASDD/
-.venv/
+.venv/.DS_Store

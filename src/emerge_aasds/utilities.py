@@ -30,15 +30,13 @@ class Factorization(Enum):
             return value
         if isinstance(value, str):
             key = value.strip().lower()
-            aliases = {
-                "lu": cls.LU,
-                "chol": cls.CHOLESKY,
-                "cholesky": cls.CHOLESKY,
-                "ldlt": cls.LDLT,
-                "qr": cls.QR,
-            }
+            aliases = {"chol": cls.CHOLESKY}
             if key in aliases:
                 return aliases[key]
+            try:
+                return cls(key)
+            except ValueError:
+                pass
         raise ValueError(
             f"Invalid factorization '{value}'. "
             f"Expected one of {[e._backend_string for e in cls]}"

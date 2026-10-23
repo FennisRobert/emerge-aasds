@@ -12,8 +12,14 @@ Example:
     >>> x, info = solver.solve(b)
 """
 
-__version__ = "0.1.0"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("emerge-aasds")
+except PackageNotFoundError:  # running from a source tree without installing
+    __version__ = "0.0.0"
 
 from .utilities import Factorization, Symmetry, Ordering, Scaling
+from .interface import AccelerateInterface
 
-__all__ = ['Ordering','Scaling','Factorization','Symmetry']
+__all__ = ['AccelerateInterface', 'Ordering', 'Scaling', 'Factorization', 'Symmetry']

@@ -17,15 +17,30 @@ import ctypes
 import time
 import platform
 import os
+import warnings
+
+# Lowest macOS that provides the Sparse API used by the wrapper (see _build_wrapper.py)
+MIN_MACOS = (15, 5)
 
 # Check if we're on macOS
 if platform.system() != 'Darwin':
     raise ImportError("AccelerateInterface only works on macOS")
 
+_mac_ver = tuple(int(p) for p in platform.mac_ver()[0].split('.')[:2] if p.isdigit())
+if _mac_ver and _mac_ver < MIN_MACOS:
+    raise ImportError(
+        f"emerge-aasds requires macOS {'.'.join(map(str, MIN_MACOS))} or newer "
+        f"(running {platform.mac_ver()[0]})"
+    )
+
 # Load our compiled wrapper
 wrapper_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'libaccelerate_wrapper.dylib')
 if not os.path.exists(wrapper_path):
-    raise ImportError(f"Wrapper library not found: {wrapper_path}\nRun build_wrapper.sh first!")
+    raise ImportError(
+        f"Wrapper library not found: {wrapper_path}\n"
+        "Reinstall the package, or for a source checkout run: "
+        "python src/emerge_aasds/_build_wrapper.py"
+    )
 
 try:
     accel = ctypes.CDLL(wrapper_path)
@@ -122,6 +137,16 @@ SPARSE_FACTOR_LU_UNPIVOTED = 81     # SparseFactorizationLUUnpivoted
 SPARSE_FACTOR_LU_SPP = 82           # SparseFactorizationLUSPP
 SPARSE_FACTOR_LU_TPP = 83           # SparseFactorizationLUTPP
 
+# Factorizations that work on one triangle of a symmetric/hermitian matrix.
+# All others (LU, QR, CholeskyAtA) take the full matrix.
+SYMMETRIC_FACTOR_TYPES = {
+    SPARSE_FACTOR_CHOLESKY,
+    SPARSE_FACTOR_LDLT,
+    SPARSE_FACTOR_LDLT_UNPIVOTED,
+    SPARSE_FACTOR_LDLT_SBK,
+    SPARSE_FACTOR_LDLT_TPP,
+}
+
 # Kind types (matching _wrapper.h / Accelerate)
 SPARSE_KIND_ORDINARY = 0
 SPARSE_KIND_SYMMETRIC = 3
@@ -202,6 +227,23 @@ accel.accel_refactor_complex_double.restype = None
 accel.accel_get_default_options.argtypes = [ctypes.c_int]
 accel.accel_get_default_options.restype = AccelFactorOptions
 
+accel.accel_mtmetis_available.argtypes = []
+accel.accel_mtmetis_available.restype = ctypes.c_int
+
+accel.accel_complex_symmetric_available.argtypes = []
+accel.accel_complex_symmetric_available.restype = ctypes.c_int
+
+MTMETIS_AVAILABLE: bool = bool(accel.accel_mtmetis_available())
+COMPLEX_SYMMETRIC_AVAILABLE: bool = bool(accel.accel_complex_symmetric_available())
+
+# SparseStatus_t values
+SPARSE_STATUS_MESSAGES = {
+    -1: "factorization failed (matrix is not positive definite or pivoting failed)",
+    -2: "matrix is singular",
+    -3: "internal error in Accelerate",
+    -4: "invalid parameter passed to Accelerate",
+}
+
 accel.accel_factor_double_ex.argtypes = [
     ctypes.c_uint8,
     ctypes.POINTER(SparseMatrix_Double),
@@ -257,6 +299,12 @@ accel.accel_cleanup_csc_matrix_double.restype = None
 accel.accel_cleanup_csc_matrix_complex_double.argtypes = [ctypes.POINTER(SparseMatrix_Complex_Double)]
 accel.accel_cleanup_csc_matrix_complex_double.restype = None
 
+accel.accel_factorization_status_double.argtypes = [ctypes.POINTER(SparseOpaqueFactorization_Double)]
+accel.accel_factorization_status_double.restype = ctypes.c_int
+
+accel.accel_factorization_status_complex_double.argtypes = [ctypes.POINTER(SparseOpaqueFactorization_Complex_Double)]
+accel.accel_factorization_status_complex_double.restype = ctypes.c_int
+
 
 class _AccelerateInterface:
     """Apple Accelerate Sparse Direct Solver with tunable parameters.
@@ -303,7 +351,14 @@ class _AccelerateInterface:
         self._factor_type = factor_map.get(factorization.lower())
         if self._factor_type is None:
             raise ValueError(f"Unknown factorization: {factorization}")
-        
+        if self._factor_type in SYMMETRIC_FACTOR_TYPES and symmetry == 'nonsymmetric':
+            raise ValueError(
+                f"Factorization '{factorization}' requires a symmetric or hermitian matrix; "
+                "use LU or QR for nonsymmetric matrices."
+            )
+        # Factorization actually used; may fall back for complex symmetric on macOS < 26
+        self._active_factor_type = self._factor_type
+
         # Map ordering string to enum
         ordering_map = {
             'default': ACCEL_ORDER_DEFAULT,
@@ -313,7 +368,13 @@ class _AccelerateInterface:
             'mtmetis': ACCEL_ORDER_MTMETIS,
         }
         self._ordering = ordering_map.get(ordering.lower(), ACCEL_ORDER_DEFAULT)
-        
+        if self._ordering == ACCEL_ORDER_MTMETIS and not MTMETIS_AVAILABLE:
+            warnings.warn(
+                "MTMetis ordering requires macOS 26 or newer; falling back to Metis.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+
         # Map scaling string to enum
         scaling_map = {
             'default': ACCEL_SCALING_DEFAULT,
@@ -334,16 +395,16 @@ class _AccelerateInterface:
         opts.zero_tolerance = self._zero_tolerance if self._zero_tolerance is not None else -1.0
         return opts
     
-    def _prepare_csc(self, A: sparse.spmatrix) -> sparse.csc_matrix:
-        """Convert to CSC and extract lower triangle for symmetric/hermitian.
-        
-        For symmetric/hermitian modes, Accelerate expects only one triangle.
-        We use scipy.sparse.tril() to extract the lower triangle, which is
-        efficient and avoids storing redundant entries.
+    def _prepare_csc(self, A: sparse.spmatrix, symmetric_storage: bool) -> sparse.csc_matrix:
+        """Convert to CSC and extract lower triangle for symmetric factorizations.
+
+        Symmetric factorizations (Cholesky, LDLT) read only one triangle; the
+        structure is built directly so Accelerate does not filter the other
+        triangle out for us. LU and QR always take the full matrix.
         """
-        if self._symmetry in ('symmetric', 'hermitian'):
+        if symmetric_storage:
             # Extract lower-triangular part (including diagonal)
-            A = A.tocsc()
+            A = sparse.tril(A, format='csc')
         else:
             A = A.tocsc()
         
@@ -384,19 +445,39 @@ class _AccelerateInterface:
         # Determine complex type from input
         self._is_complex = np.iscomplexobj(A.data) if hasattr(A, 'data') else False
         
-        # Convert to CSC (with tril for symmetric/hermitian)
-        csc = self._prepare_csc(A)
-        
+        # Complex symmetric (non-Hermitian) LDLT crashes inside Accelerate on macOS < 26
+        if (self._factored_obj is None
+                and self._is_complex
+                and self._symmetry == 'symmetric'
+                and self._factor_type in SYMMETRIC_FACTOR_TYPES
+                and not COMPLEX_SYMMETRIC_AVAILABLE):
+            warnings.warn(
+                f"Complex symmetric '{self._factorization}' factorization requires macOS 26 "
+                "or newer; falling back to LU.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            self._active_factor_type = SPARSE_FACTOR_LU_TPP
+        elif self._factored_obj is None:
+            self._active_factor_type = self._factor_type
+
+        symmetric_storage = self._active_factor_type in SYMMETRIC_FACTOR_TYPES
+
+        # Convert to CSC (with tril for symmetric factorizations)
+        csc = self._prepare_csc(A, symmetric_storage)
+
         n = csc.shape[0]
         m = csc.shape[1]
-        
+
         # Determine kind and triangle for Accelerate
         kind = SPARSE_KIND_ORDINARY
         triangle = SPARSE_TRIANGLE_LOWER  # default, ignored for ordinary
-        if self._symmetry == 'symmetric':
-            kind = SPARSE_KIND_SYMMETRIC
-        elif self._symmetry == 'hermitian':
-            kind = SPARSE_KIND_HERMITIAN
+        if symmetric_storage:
+            # A real hermitian matrix is just symmetric
+            if self._symmetry == 'hermitian' and self._is_complex:
+                kind = SPARSE_KIND_HERMITIAN
+            else:
+                kind = SPARSE_KIND_SYMMETRIC
         
         # Prepare CSC arrays with correct dtypes for Accelerate:
         #   columnStarts: int64 (c_long on macOS is 64-bit)
@@ -429,13 +510,14 @@ class _AccelerateInterface:
             
             if self._factored_obj is None:
                 self._factored_obj = accel.accel_factor_complex_double_ex(
-                    self._factor_type, new_sparse_matrix, ctypes.byref(opts)
+                    self._active_factor_type, new_sparse_matrix, ctypes.byref(opts)
                 )
             else:
                 accel.accel_refactor_complex_double_ex(
                     new_sparse_matrix, self._factored_obj, ctypes.byref(opts)
                 )
-            
+            status = accel.accel_factorization_status_complex_double(self._factored_obj)
+
             # Clean up previous sparse matrix wrapper (not the arrays)
             if self._sparse_matrix is not None:
                 if self._csc_created:
@@ -464,13 +546,14 @@ class _AccelerateInterface:
             
             if self._factored_obj is None:
                 self._factored_obj = accel.accel_factor_double_ex(
-                    self._factor_type, new_sparse_matrix, ctypes.byref(opts)
+                    self._active_factor_type, new_sparse_matrix, ctypes.byref(opts)
                 )
             else:
                 accel.accel_refactor_double_ex(
                     new_sparse_matrix, self._factored_obj, ctypes.byref(opts)
                 )
-            
+            status = accel.accel_factorization_status_double(self._factored_obj)
+
             # Clean up previous sparse matrix wrapper
             if self._sparse_matrix is not None:
                 if self._csc_created:
@@ -480,17 +563,21 @@ class _AccelerateInterface:
             
             self._sparse_matrix = new_sparse_matrix
             self._csc_created = True
-        
+
+        if status != 0:
+            # Keep the analysis but drop the failed factorization so the next
+            # factorize() starts fresh instead of refactoring a broken object.
+            self.destroy()
+            self._analysed = True
+            reason = SPARSE_STATUS_MESSAGES.get(status, f"status {status}")
+            raise RuntimeError(f"Accelerate {self._factorization} factorization failed: {reason}")
+
         if self.verbose > 0:
             print(f"Factorize ({self._factorization}): {time.time()-t0:.3f}s  "
                   f"[CSC direct, nnz={csc.nnz}]")
     
     def solve(self, b: np.ndarray) -> tuple[np.ndarray, dict[str, float]]:
-        """Solve using factorization - supports multiple RHS.
-        
-        WARNING: Apple Accelerate has a bug with symmetric mode + multi-RHS.
-        Only use symmetric/hermitian mode with single RHS, or use nonsymmetric mode.
-        """
+        """Solve using factorization - supports multiple RHS."""
         if self._factored_obj is None:
             raise RuntimeError("Call factorize() first")
         

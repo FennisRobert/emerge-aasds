@@ -137,6 +137,36 @@ AccelFactorOptions accel_get_default_options(int is_complex)
     return opts;
 }
 
+/* Returns 1 if SparseOrderMTMetis is available at runtime (macOS 26+) */
+int accel_mtmetis_available(void)
+{
+    if (__builtin_available(macOS 26.0, *)) {
+        return 1;
+    }
+    return 0;
+}
+
+/* Returns 1 if complex symmetric (non-Hermitian) LDL^T is available (macOS 26+).
+ * On older systems Accelerate traps (crashes) instead of returning an error. */
+int accel_complex_symmetric_available(void)
+{
+    if (__builtin_available(macOS 26.0, *)) {
+        return 1;
+    }
+    return 0;
+}
+
+/* Factorization status (SparseStatus_t: 0 = OK, negative = failure) */
+int accel_factorization_status_double(const SparseOpaqueFactorization_Double *Factored)
+{
+    return Factored ? Factored->status : SparseParameterError;
+}
+
+int accel_factorization_status_complex_double(const SparseOpaqueFactorization_Complex_Double *Factored)
+{
+    return Factored ? Factored->status : SparseParameterError;
+}
+
 /* Helper to convert our ordering enum to Accelerate's */
 static SparseOrder_t get_order_type(AccelOrderMethod method)
 {
@@ -148,7 +178,11 @@ static SparseOrder_t get_order_type(AccelOrderMethod method)
         case ACCEL_ORDER_COLAMD:
             return SparseOrderCOLAMD;
         case ACCEL_ORDER_MTMETIS:
-            return SparseOrderMTMetis;
+            /* MTMetis requires macOS 26; fall back to single-threaded Metis */
+            if (__builtin_available(macOS 26.0, *)) {
+                return SparseOrderMTMetis;
+            }
+            return SparseOrderMetis;
         case ACCEL_ORDER_DEFAULT:
         default:
             return SparseOrderDefault;
@@ -336,10 +370,10 @@ SparseMatrix_Complex_Double* accel_create_from_csc_complex_double(
     mat->structure.blockSize = 1;
     
     /* Set attributes on the complex-typed attributes field */
-    if (kind == 3) {  /* symmetric */
+    if (kind == 3) {  /* complex symmetric (A = A^T) */
         mat->structure.attributes.kind = SparseSymmetric;
-    } else if (kind == 4) {  /* hermitian */
-        mat->structure.attributes.kind = SparseSymmetric;
+    } else if (kind == 4) {  /* hermitian (A = A^H) */
+        mat->structure.attributes.kind = SparseHermitian;
     }
     /* kind == 0: ordinary, attributes stay zeroed */
     

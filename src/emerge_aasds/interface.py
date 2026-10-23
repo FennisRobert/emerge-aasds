@@ -12,12 +12,19 @@ class AccelerateInterface(_AccelerateInterface):
     factorization
         Matrix factorization to use. May be a `Factorization` enum or
         a string such as ``"lu"``, ``"cholesky"``, ``"ldlt"``, or ``"qr"``.
+        Cholesky and the LDLT variants require a symmetric or hermitian
+        matrix; Cholesky additionally requires it to be positive definite.
+        Complex symmetric (non-hermitian) LDLT requires macOS 26 and falls
+        back to LU on older systems.
     symmetry
         Matrix symmetry type. May be a `Symmetry` enum or a string such as
         ``"symmetric"``, ``"nonsymmetric"``, or ``"hermitian"``.
+        For complex matrices, ``"symmetric"`` means A = A^T and
+        ``"hermitian"`` means A = A^H.
     ordering
         Fill-reducing ordering algorithm (default: "default").
-        Options: "default", "amd", "metis", "colamd"
+        Options: "default", "amd", "metis", "colamd", "mtmetis"
+        ("mtmetis" requires macOS 26 and falls back to "metis" on older systems)
     scaling
         Matrix scaling strategy (default: "default").
         Options: "default", "none"
@@ -68,12 +75,7 @@ class AccelerateInterface(_AccelerateInterface):
         ord_ = Ordering._from_any(ordering)
         scl = Scaling._from_any(scaling)
 
-        # Check for unsupported factorizations
-        if fac is Factorization.LDLT or fac is Factorization.CHOLESKY:
-            raise ValueError(
-                'LDLT and Cholesky factorization are currently not supported.'
-            )
-
+        # Default overwrites for better performance.
         if sym is Symmetry.SYMMETRIC and fac is Factorization.LU:
             fac = Factorization.LDLT_SBK
         elif sym is Symmetry.NONSYMMETRIC and fac is Factorization.LU:

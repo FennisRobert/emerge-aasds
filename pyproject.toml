@@ -1,30 +1,33 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "emerge-aasds"
-version = "0.3.2"
+version = "0.4.0"
 description = "Apple Accelerate Sparse Direct Solver - Fast sparse linear solver for macOS"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
-    {name = "Your Name", email = "your.email@example.com"}
+    {name = "Robert Fennis", email = "fennisrobert@gmail.com"}
 ]
-keywords = ["sparse", "linear-solver", "accelerate", "macos", "apple-silicon"]
+keywords = ["sparse", "linear-solver", "accelerate", "macos", "apple-silicon", "emerge"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: MacOS",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: C",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Mathematics",
 ]
 
 dependencies = [
@@ -46,6 +49,6 @@ Issues = "https://github.com/FennisRobert/emerge-aasds/issues"
 [tool.setuptools]
 packages = ["emerge_aasds"]
 package-dir = {"" = "src"}
-
-[tool.setuptools.package-data]
-"*" = ["*.dylib"]
+# The dylib is compiled straight into the build directory by setup.py;
+# the C sources only ship in the sdist (see MANIFEST.in).
+include-package-data = false
